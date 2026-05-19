@@ -101,7 +101,20 @@ async def on_ready():
     notion_watcher.start()
     radio_watchdog.start()
     print("✅ Tareas programadas iniciadas")
-    print(f"🔧 ffmpeg path: {FFMPEG_PATH}")
+    # Verificar ffmpeg
+    import subprocess
+    try:
+        result = subprocess.run([FFMPEG_PATH, "-version"], capture_output=True, text=True, timeout=5)
+        print(f"🔧 ffmpeg OK: {result.stdout.splitlines()[0]}")
+    except Exception as e:
+        print(f"❌ ffmpeg no encontrado en '{FFMPEG_PATH}': {e}")
+        # Intentar encontrarlo en paths comunes de Nix
+        for path in ["/usr/bin/ffmpeg", "/bin/ffmpeg", "/nix/var/nix/profiles/default/bin/ffmpeg"]:
+            if os.path.exists(path):
+                import shutil as _sh
+                FFMPEG_PATH = path
+                print(f"✅ ffmpeg encontrado en: {FFMPEG_PATH}")
+                break
     await asyncio.sleep(3)
     await start_radio()
 
@@ -174,16 +187,21 @@ async def start_radio(station_index: int = 0):
     if not voice or not voice.is_connected():
         try:
             voice = await vc_channel.connect()
+            print(f"✅ Conectado al canal de voz: {vc_channel.name}")
         except Exception as e:
             print(f"❌ Error conectando a voz: {e}")
             return
 
     if voice.is_playing():
+        print("ℹ️ Ya está reproduciendo, no se inicia otra vez")
         return
 
     url = RADIO_STATIONS[station_index % len(RADIO_STATIONS)]
+    print(f"🎵 Intentando reproducir: {url} con ffmpeg={FFMPEG_PATH}")
 
     def after_play(error):
+        if error:
+            print(f"⚠️ after_play error: {error}")
         asyncio.run_coroutine_threadsafe(
             start_radio((station_index + 1) % len(RADIO_STATIONS)),
             bot.loop
@@ -191,13 +209,13 @@ async def start_radio(station_index: int = 0):
 
     ffmpeg_opts = {
         "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-        "options": "-vn -af loudnorm"
+        "options": "-vn"
     }
     try:
         source = discord.FFmpegPCMAudio(url, executable=FFMPEG_PATH, **ffmpeg_opts)
-        source = discord.PCMVolumeTransformer(source, volume=0.4)
+        source = discord.PCMVolumeTransformer(source, volume=0.5)
         voice.play(source, after=after_play)
-        print(f"🎵 Reproduciendo: {url}")
+        print(f"✅ Radio iniciada: {url}")
     except Exception as e:
         print(f"❌ Error iniciando radio: {e}")
 
