@@ -99,6 +99,12 @@ async def on_ready():
     notion_watcher.start()
     print("✅ Tareas programadas iniciadas")
     print(f"🔧 ffmpeg path: {FFMPEG_PATH}")
+    # Si ya hay alguien en Focus cuando el bot arranca, empezar la radio
+    await asyncio.sleep(3)
+    guild = bot.get_guild(GUILD_ID)
+    if guild and humans_in_focus(guild) > 0:
+        print("🎵 Hay gente en Focus al iniciar, arrancando radio...")
+        await start_radio()
 
 
 @bot.event
@@ -506,6 +512,12 @@ async def puntos(interaction: discord.Interaction):
         f"Estás en el puesto **#{posicion}** del ranking.",
         ephemeral=True
     )
+
+
+@bot.tree.command(name="musica", description="Arrancar la música en Focus manualmente", guild=discord.Object(id=GUILD_ID))
+async def musica(interaction: discord.Interaction):
+    await interaction.response.send_message("🎵 Arrancando radio en 🎧 Focus...", ephemeral=True)
+    await start_radio()
 
 
 @bot.tree.command(name="radio", description="Cambiar la estación de radio del Focus Room", guild=discord.Object(id=GUILD_ID))
