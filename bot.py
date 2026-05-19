@@ -8,6 +8,8 @@ import json
 import random
 from datetime import datetime, time, timedelta
 import pytz
+from dotenv import load_dotenv
+load_dotenv()
 
 TOKEN = os.environ["DISCORD_TOKEN"]
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
@@ -230,19 +232,30 @@ async def daily_standup():
     await msg.create_thread(name=f"Standup {datetime.now(TZ).strftime('%d/%m/%Y')}")
 
 
-@tasks.loop(time=time(9, 30, tzinfo=TZ))
+@tasks.loop(time=[time(9, 0, tzinfo=TZ), time(9, 30, tzinfo=TZ)])
 async def reunion_semanal():
-    # Solo los lunes
-    if datetime.now(TZ).weekday() != 0:
-        return
-    canal = bot.get_channel(CH_RECORDATORIOS)
-    if not canal:
-        return
-    await canal.send(
-        "📅 **Recordatorio — Reunión Semanal de equipo**\n"
-        "Hoy es lunes, no se olviden de la reunión semanal.\n"
-        "Súmense a 🎤 **Reuniones** cuando estén listos! @here"
-    )
+    now = datetime.now(TZ)
+    weekday = now.weekday()  # 0=lunes, 1=martes, 2=miércoles, 3=jueves, 4=viernes
+    hora = now.hour
+    minuto = now.minute
+
+    # Lunes, Martes, Jueves, Viernes a las 9:00
+    if weekday in [0, 1, 3, 4] and hora == 9 and minuto == 0:
+        canal = bot.get_channel(CH_RECORDATORIOS)
+        if canal:
+            await canal.send(
+                "📅 **Recordatorio — Reunión de equipo**\n"
+                "Súmense a 🎤 **Reuniones** cuando estén listos! @here"
+            )
+
+    # Miércoles a las 9:30
+    elif weekday == 2 and hora == 9 and minuto == 30:
+        canal = bot.get_channel(CH_RECORDATORIOS)
+        if canal:
+            await canal.send(
+                "📅 **Recordatorio — Reunión de equipo**\n"
+                "Súmense a 🎤 **Reuniones** cuando estén listos! @here"
+            )
 
 
 @tasks.loop(time=time(10, 0, tzinfo=TZ))
