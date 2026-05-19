@@ -8,8 +8,11 @@ import json
 import random
 from datetime import datetime, time, timedelta
 import pytz
-from dotenv import load_dotenv
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 TOKEN = os.environ["DISCORD_TOKEN"]
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
