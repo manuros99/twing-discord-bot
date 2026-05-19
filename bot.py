@@ -66,7 +66,7 @@ _load_opus()
 RADIO_STATIONS = [
     ("🌿 Groove Salad",    "https://ice6.somafm.com/groovesalad-128-mp3"),
     ("🎷 Radio Swiss Jazz", "http://stream.srg-ssr.ch/m/rsj/mp3_128"),
-    ("🌙 Radio Paradise",  "https://stream.radioparadise.com/mellow-aac-128"),
+    ("🎹 Lush",            "https://ice6.somafm.com/lush-128-mp3"),
 ]
 
 # IDs de canales
@@ -207,6 +207,15 @@ async def on_message(message: discord.Message):
 _current_station = 0
 _radio_retries = 0
 MAX_RADIO_RETRIES = len(RADIO_STATIONS)
+_radio_lock: asyncio.Lock | None = None  # initialized after event loop starts
+_stopping_manually = False  # True while we're manually stopping to change station
+
+
+def _get_radio_lock() -> asyncio.Lock:
+    global _radio_lock
+    if _radio_lock is None:
+        _radio_lock = asyncio.Lock()
+    return _radio_lock
 
 
 def focus_humans(guild: discord.Guild) -> list:
@@ -262,55 +271,70 @@ async def stop_radio(guild: discord.Guild):
 
 
 async def start_radio(guild: discord.Guild, station: int = 0):
-    global _current_station, _radio_retries
+    global _current_station, _radio_retries, _stopping_manually
 
-    if _radio_retries >= MAX_RADIO_RETRIES:
-        print("❌ Todas las estaciones fallaron — cancelando radio")
-        _radio_retries = 0
+    lock = _get_radio_lock()
+    if lock.locked():
+        print("⚠️ start_radio ya en progreso, ignorando llamada duplicada")
         return
 
-    _current_station = station % len(RADIO_STATIONS)
-    name, stream_url = RADIO_STATIONS[_current_station]
-
-    voice = await get_voice(guild)
-    if not voice:
-        return
-
-    if voice.is_playing():
-        voice.stop()
-        await asyncio.sleep(0.3)
-
-    print(f"🎵 Conectando a: {name} ({stream_url})")
-
-    def after_play(error):
-        global _radio_retries
-        if error:
-            print(f"⚠️ Stream cortado: {type(error).__name__}: {error}")
-            _radio_retries += 1
-        else:
+    async with lock:
+        if _radio_retries >= MAX_RADIO_RETRIES:
+            print("❌ Todas las estaciones fallaron — cancelando radio")
             _radio_retries = 0
-        g = bot.get_guild(GUILD_ID)
-        if g and focus_humans(g):
-            next_s = (_current_station + 1) % len(RADIO_STATIONS)
-            asyncio.run_coroutine_threadsafe(start_radio(g, next_s), bot.loop)
+            return
 
-    try:
-        source = discord.FFmpegPCMAudio(
-            stream_url,
-            executable=FFMPEG_PATH,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 10 -nostdin",
-            options="-vn -ar 48000 -ac 2 -b:a 128k"
-        )
-        voice.play(discord.PCMVolumeTransformer(source, volume=0.5), after=after_play)
-        _radio_retries = 0
-        print(f"✅ Reproduciendo: {name}")
-    except Exception as e:
-        import traceback
-        print(f"❌ Error al reproducir {name}: {type(e).__name__}: {e}")
-        traceback.print_exc()
-        _radio_retries += 1
-        await asyncio.sleep(2)
-        await start_radio(guild, (_current_station + 1) % len(RADIO_STATIONS))
+        _current_station = station % len(RADIO_STATIONS)
+        name, stream_url = RADIO_STATIONS[_current_station]
+
+        voice = await get_voice(guild)
+        if not voice:
+            return
+
+        if voice.is_playing():
+            _stopping_manually = True
+            voice.stop()
+            await asyncio.sleep(0.3)
+            _stopping_manually = False
+
+        print(f"🎵 Conectando a: {name} ({stream_url})")
+
+        def after_play(error):
+            global _radio_retries, _stopping_manually
+            if _stopping_manually:
+                return  # manual station change in progress — don't auto-restart
+            if error:
+                print(f"⚠️ Stream cortado: {type(error).__name__}: {error}")
+                _radio_retries += 1
+            else:
+                _radio_retries = 0
+            g = bot.get_guild(GUILD_ID)
+            if g and focus_humans(g):
+                next_s = (_current_station + 1) % len(RADIO_STATIONS)
+                asyncio.run_coroutine_threadsafe(start_radio(g, next_s), bot.loop)
+
+        try:
+            source = discord.FFmpegPCMAudio(
+                stream_url,
+                executable=FFMPEG_PATH,
+                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 10 -nostdin",
+                options="-vn -ar 48000 -ac 2 -b:a 128k"
+            )
+            voice.play(discord.PCMVolumeTransformer(source, volume=0.5), after=after_play)
+            _radio_retries = 0
+            print(f"✅ Reproduciendo: {name}")
+        except Exception as e:
+            import traceback
+            print(f"❌ Error al reproducir {name}: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            _radio_retries += 1
+            await asyncio.sleep(2)
+            next_s = (_current_station + 1) % len(RADIO_STATIONS)
+        else:
+            return
+
+    # Retry outside the lock so the lock is released before recursing
+    await start_radio(guild, next_s)
 
 
 @bot.event
@@ -610,9 +634,9 @@ async def musica(interaction: discord.Interaction):
 
 @bot.tree.command(name="radio", description="Cambiar la estación de radio del Focus Room", guild=discord.Object(id=GUILD_ID))
 @app_commands.choices(estacion=[
-    app_commands.Choice(name="🎷 Jazz BGM", value="0"),
-    app_commands.Choice(name="🌿 Lofi Hip Hop", value="1"),
-    app_commands.Choice(name="🎹 Jazz & Bossa Nova", value="2"),
+    app_commands.Choice(name="🌿 Groove Salad", value="0"),
+    app_commands.Choice(name="🎷 Radio Swiss Jazz", value="1"),
+    app_commands.Choice(name="🎹 Lush", value="2"),
 ])
 async def radio(interaction: discord.Interaction, estacion: app_commands.Choice[str]):
     await start_radio(interaction.guild, int(estacion.value))
