@@ -18,10 +18,8 @@ TOKEN = os.environ["DISCORD_TOKEN"]
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 GUILD_ID = 1506296906509193256
 
-import shutil
-# En Railway usa el ffmpeg del sistema (Linux), en Mac usa el binario local
-_local_ffmpeg = os.path.join(os.path.dirname(__file__), "ffmpeg")
-FFMPEG_PATH = _local_ffmpeg if os.path.exists(_local_ffmpeg) and os.access(_local_ffmpeg, os.X_OK) else (shutil.which("ffmpeg") or "ffmpeg")
+import imageio_ffmpeg
+FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
 RADIO_STATIONS = [
     "https://ice1.somafm.com/jazzgroove-128-mp3",
@@ -99,24 +97,8 @@ async def on_ready():
     hilo_comida.start()
     ranking_semanal.start()
     notion_watcher.start()
-    radio_watchdog.start()
     print("✅ Tareas programadas iniciadas")
-    # Verificar ffmpeg
-    import subprocess
-    try:
-        result = subprocess.run([FFMPEG_PATH, "-version"], capture_output=True, text=True, timeout=5)
-        print(f"🔧 ffmpeg OK: {result.stdout.splitlines()[0]}")
-    except Exception as e:
-        print(f"❌ ffmpeg no encontrado en '{FFMPEG_PATH}': {e}")
-        # Intentar encontrarlo en paths comunes de Nix
-        for path in ["/usr/bin/ffmpeg", "/bin/ffmpeg", "/nix/var/nix/profiles/default/bin/ffmpeg"]:
-            if os.path.exists(path):
-                import shutil as _sh
-                FFMPEG_PATH = path
-                print(f"✅ ffmpeg encontrado en: {FFMPEG_PATH}")
-                break
-    await asyncio.sleep(3)
-    await start_radio()
+    print(f"🔧 ffmpeg path: {FFMPEG_PATH}")
 
 
 @bot.event
@@ -175,14 +157,22 @@ async def on_message(message: discord.Message):
 
 # ─── RADIO ────────────────────────────────────────────────────────────────────
 
+def humans_in_focus(guild: discord.Guild) -> int:
+    vc = guild.get_channel(VC_FOCUS)
+    if not vc:
+        return 0
+    return sum(1 for m in vc.members if not m.bot)
+
+
 async def start_radio(station_index: int = 0):
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return
-    vc_channel = guild.get_channel(VC_FOCUS)
-    if not vc_channel:
-        return
 
+    if humans_in_focus(guild) == 0:
+        return  # nadie en el canal, no arrancar
+
+    vc_channel = guild.get_channel(VC_FOCUS)
     voice = guild.voice_client
     if not voice or not voice.is_connected():
         try:
@@ -193,11 +183,10 @@ async def start_radio(station_index: int = 0):
             return
 
     if voice.is_playing():
-        print("ℹ️ Ya está reproduciendo, no se inicia otra vez")
         return
 
     url = RADIO_STATIONS[station_index % len(RADIO_STATIONS)]
-    print(f"🎵 Intentando reproducir: {url} con ffmpeg={FFMPEG_PATH}")
+    print(f"🎵 Reproduciendo: {url}")
 
     def after_play(error):
         if error:
@@ -215,21 +204,37 @@ async def start_radio(station_index: int = 0):
         source = discord.FFmpegPCMAudio(url, executable=FFMPEG_PATH, **ffmpeg_opts)
         source = discord.PCMVolumeTransformer(source, volume=0.5)
         voice.play(source, after=after_play)
-        print(f"✅ Radio iniciada: {url}")
+        print(f"✅ Radio iniciada")
     except Exception as e:
         print(f"❌ Error iniciando radio: {e}")
 
 
-@tasks.loop(minutes=5)
-async def radio_watchdog():
+async def stop_radio():
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return
     voice = guild.voice_client
-    if voice and voice.is_connected() and not voice.is_playing():
-        await start_radio()
-    elif not voice or not voice.is_connected():
-        await start_radio()
+    if voice and voice.is_connected():
+        await voice.disconnect()
+        print("🔇 Radio detenida — canal vacío")
+
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    if member.bot:
+        return
+    guild = member.guild
+
+    # Alguien entró al canal Focus
+    if after.channel and after.channel.id == VC_FOCUS:
+        voice = guild.voice_client
+        if not voice or not voice.is_playing():
+            await start_radio()
+
+    # Alguien salió del canal Focus
+    if before.channel and before.channel.id == VC_FOCUS:
+        if humans_in_focus(guild) == 0:
+            await stop_radio()
 
 
 # ─── TAREAS PROGRAMADAS ───────────────────────────────────────────────────────
