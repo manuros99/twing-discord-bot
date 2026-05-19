@@ -99,12 +99,11 @@ async def on_ready():
     notion_watcher.start()
     print("✅ Tareas programadas iniciadas")
     print(f"🔧 ffmpeg path: {FFMPEG_PATH}")
-    # Si ya hay alguien en Focus cuando el bot arranca, empezar la radio
     await asyncio.sleep(3)
     guild = bot.get_guild(GUILD_ID)
-    if guild and humans_in_focus(guild) > 0:
-        print("🎵 Hay gente en Focus al iniciar, arrancando radio...")
-        await start_radio()
+    if guild and focus_humans(guild):
+        print(f"🎵 Hay gente en Focus al iniciar, arrancando radio...")
+        await start_radio(guild)
 
 
 @bot.event
@@ -163,66 +162,80 @@ async def on_message(message: discord.Message):
 
 # ─── RADIO ────────────────────────────────────────────────────────────────────
 
-def humans_in_focus(guild: discord.Guild) -> int:
+_current_station = 0
+
+
+def focus_humans(guild: discord.Guild) -> list:
     vc = guild.get_channel(VC_FOCUS)
-    if not vc:
-        return 0
-    return sum(1 for m in vc.members if not m.bot)
+    return [m for m in vc.members if not m.bot] if vc else []
 
 
-async def start_radio(station_index: int = 0):
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return
+async def stop_radio(guild: discord.Guild):
+    voice = guild.voice_client
+    if voice:
+        if voice.is_playing():
+            voice.stop()
+        try:
+            await voice.disconnect(force=True)
+        except Exception:
+            pass
+    print("🔇 Radio detenida")
 
-    if humans_in_focus(guild) == 0:
-        return  # nadie en el canal, no arrancar
+
+async def start_radio(guild: discord.Guild, station: int = 0):
+    global _current_station
+    _current_station = station % len(RADIO_STATIONS)
 
     vc_channel = guild.get_channel(VC_FOCUS)
+    if not vc_channel:
+        print("❌ Canal Focus no encontrado")
+        return
+
+    # Desconectar si ya hay una instancia colgada
     voice = guild.voice_client
+    if voice and not voice.is_connected():
+        try:
+            await voice.disconnect(force=True)
+        except Exception:
+            pass
+        voice = None
+
+    # Conectar al canal
     if not voice or not voice.is_connected():
         try:
-            voice = await vc_channel.connect()
-            print(f"✅ Conectado al canal de voz: {vc_channel.name}")
+            voice = await vc_channel.connect(timeout=10, reconnect=True)
+            print(f"✅ Bot conectado a {vc_channel.name}")
         except Exception as e:
-            print(f"❌ Error conectando a voz: {e}")
+            print(f"❌ No se pudo conectar al canal de voz: {e}")
             return
 
     if voice.is_playing():
-        return
+        voice.stop()
+        await asyncio.sleep(0.5)
 
-    url = RADIO_STATIONS[station_index % len(RADIO_STATIONS)]
-    print(f"🎵 Reproduciendo: {url}")
+    url = RADIO_STATIONS[_current_station]
+    print(f"🎵 Iniciando stream: {url}")
 
     def after_play(error):
         if error:
-            print(f"⚠️ after_play error: {error}")
-        asyncio.run_coroutine_threadsafe(
-            start_radio((station_index + 1) % len(RADIO_STATIONS)),
-            bot.loop
-        )
+            print(f"⚠️ Stream error: {error}")
+        # Solo reconectar si todavía hay gente en el canal
+        g = bot.get_guild(GUILD_ID)
+        if g and focus_humans(g):
+            next_station = (_current_station + 1) % len(RADIO_STATIONS)
+            asyncio.run_coroutine_threadsafe(start_radio(g, next_station), bot.loop)
 
-    ffmpeg_opts = {
-        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-        "options": "-vn"
-    }
     try:
-        source = discord.FFmpegPCMAudio(url, executable=FFMPEG_PATH, **ffmpeg_opts)
-        source = discord.PCMVolumeTransformer(source, volume=0.5)
-        voice.play(source, after=after_play)
-        print(f"✅ Radio iniciada")
+        source = discord.FFmpegPCMAudio(
+            url,
+            executable=FFMPEG_PATH,
+            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+            options="-vn"
+        )
+        voice.play(discord.PCMVolumeTransformer(source, volume=0.5), after=after_play)
+        print(f"✅ Reproduciendo: {url}")
     except Exception as e:
-        print(f"❌ Error iniciando radio: {e}")
-
-
-async def stop_radio():
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return
-    voice = guild.voice_client
-    if voice and voice.is_connected():
-        await voice.disconnect()
-        print("🔇 Radio detenida — canal vacío")
+        print(f"❌ Error al reproducir: {e}")
 
 
 @bot.event
@@ -231,16 +244,18 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         return
     guild = member.guild
 
-    # Alguien entró al canal Focus
+    # Alguien entró a Focus
     if after.channel and after.channel.id == VC_FOCUS:
+        print(f"👤 {member.display_name} entró a Focus")
         voice = guild.voice_client
         if not voice or not voice.is_playing():
-            await start_radio()
+            await start_radio(guild, _current_station)
 
-    # Alguien salió del canal Focus
+    # Alguien salió de Focus
     if before.channel and before.channel.id == VC_FOCUS:
-        if humans_in_focus(guild) == 0:
-            await stop_radio()
+        if not focus_humans(guild):
+            print("👤 Focus vacío — deteniendo radio")
+            await stop_radio(guild)
 
 
 # ─── TAREAS PROGRAMADAS ───────────────────────────────────────────────────────
@@ -517,7 +532,7 @@ async def puntos(interaction: discord.Interaction):
 @bot.tree.command(name="musica", description="Arrancar la música en Focus manualmente", guild=discord.Object(id=GUILD_ID))
 async def musica(interaction: discord.Interaction):
     await interaction.response.send_message("🎵 Arrancando radio en 🎧 Focus...", ephemeral=True)
-    await start_radio()
+    await start_radio(interaction.guild)
 
 
 @bot.tree.command(name="radio", description="Cambiar la estación de radio del Focus Room", guild=discord.Object(id=GUILD_ID))
@@ -527,11 +542,7 @@ async def musica(interaction: discord.Interaction):
     app_commands.Choice(name="🌸 Lush (chillout)", value="2"),
 ])
 async def radio(interaction: discord.Interaction, estacion: app_commands.Choice[str]):
-    guild = bot.get_guild(GUILD_ID)
-    voice = guild.voice_client if guild else None
-    if voice and voice.is_playing():
-        voice.stop()
-    await start_radio(int(estacion.value))
+    await start_radio(interaction.guild, int(estacion.value))
     await interaction.response.send_message(
         f"🎵 Cambiando a **{estacion.name}** en 🎧 Focus...", ephemeral=True
     )
@@ -539,8 +550,7 @@ async def radio(interaction: discord.Interaction, estacion: app_commands.Choice[
 
 @bot.tree.command(name="volumen", description="Cambiar el volumen de la radio (0-100)", guild=discord.Object(id=GUILD_ID))
 async def volumen(interaction: discord.Interaction, nivel: int):
-    guild = bot.get_guild(GUILD_ID)
-    voice = guild.voice_client if guild else None
+    voice = interaction.guild.voice_client
     if voice and voice.source:
         voice.source.volume = max(0, min(nivel, 100)) / 100
         await interaction.response.send_message(f"🔊 Volumen: {nivel}%", ephemeral=True)
