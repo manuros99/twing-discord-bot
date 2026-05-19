@@ -30,7 +30,7 @@ def _load_opus():
         return
     import subprocess
 
-    # Intentar nombres estándar (funciona si LD_LIBRARY_PATH está seteado)
+    # apt instala libopus0 en /usr/lib/x86_64-linux-gnu — ctypes lo encuentra solo
     for name in ["opus", "libopus.so.0", "libopus.so"]:
         try:
             discord.opus.load_opus(name)
@@ -39,10 +39,10 @@ def _load_opus():
         except Exception:
             pass
 
-    # Buscar con find en /nix (path real varía por hash del store)
+    # Fallback: buscar con find en todo el sistema
     try:
         result = subprocess.run(
-            ["find", "/nix", "-name", "libopus.so*", "-type", "f"],
+            ["find", "/usr", "/lib", "-name", "libopus.so*", "-type", "f"],
             capture_output=True, text=True, timeout=10
         )
         for path in result.stdout.strip().splitlines():
@@ -51,7 +51,7 @@ def _load_opus():
                 continue
             try:
                 discord.opus.load_opus(path)
-                print(f"✅ Opus cargado desde nix store: {path}")
+                print(f"✅ Opus encontrado en: {path}")
                 return
             except Exception:
                 pass
