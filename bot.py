@@ -90,6 +90,7 @@ ROLES_AREA = {
 TZ = pytz.timezone("America/Argentina/Buenos_Aires")
 
 PUNTOS_FILE = "puntos.json"
+TODOS_FILE  = "todos.json"
 
 CHISTES = [
     "¿Por qué los programadores confunden Halloween con Navidad? Porque Oct 31 = Dec 25. 🎃",
@@ -125,6 +126,117 @@ def sumar_punto(user_id: str):
     data[user_id] = data.get(user_id, 0) + 1
     guardar_puntos(data)
     return data[user_id]
+
+
+# ─── TODO LIST ────────────────────────────────────────────────────────────────
+
+def cargar_todos() -> dict:
+    if os.path.exists(TODOS_FILE):
+        with open(TODOS_FILE) as f:
+            return json.load(f)
+    return {}
+
+def guardar_todos(data: dict):
+    with open(TODOS_FILE, "w") as f:
+        json.dump(data, f)
+
+todo_group = app_commands.Group(name="todo", description="Tu lista de tareas personal 📋")
+
+@todo_group.command(name="agregar", description="Agregar una tarea a tu lista")
+@app_commands.describe(tarea="¿Qué tenés que hacer?")
+async def todo_agregar(interaction: discord.Interaction, tarea: str):
+    data = cargar_todos()
+    uid = str(interaction.user.id)
+    if uid not in data:
+        data[uid] = []
+    data[uid].append({"texto": tarea, "hecho": False})
+    guardar_todos(data)
+    pos = len(data[uid])
+    await interaction.response.send_message(
+        f"✅ Tarea **#{pos}** agregada: {tarea}", ephemeral=True
+    )
+
+@todo_group.command(name="ver", description="Ver tu lista de tareas completa")
+async def todo_ver(interaction: discord.Interaction):
+    data = cargar_todos()
+    uid = str(interaction.user.id)
+    tareas = data.get(uid, [])
+    if not tareas:
+        await interaction.response.send_message(
+            "📋 Tu lista está vacía. Usá `/todo agregar` para empezar.", ephemeral=True
+        )
+        return
+    lines = []
+    pendientes = 0
+    for i, t in enumerate(tareas, 1):
+        if t["hecho"]:
+            lines.append(f"✅ ~~{i}. {t['texto']}~~")
+        else:
+            lines.append(f"⬜ **{i}. {t['texto']}**")
+            pendientes += 1
+    embed = discord.Embed(
+        title=f"📋 To-Do de {interaction.user.display_name}",
+        description="\n".join(lines),
+        color=discord.Color.blurple()
+    )
+    embed.set_footer(text=f"{pendientes} pendiente(s) · /todo hecho <n> para marcar como hecho")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@todo_group.command(name="hecho", description="Marcar una tarea como completada")
+@app_commands.describe(numero="Número de la tarea (de /todo ver)")
+async def todo_hecho(interaction: discord.Interaction, numero: int):
+    data = cargar_todos()
+    uid = str(interaction.user.id)
+    tareas = data.get(uid, [])
+    if numero < 1 or numero > len(tareas):
+        await interaction.response.send_message(
+            f"❌ No existe la tarea #{numero}. Usá `/todo ver` para ver tu lista.", ephemeral=True
+        )
+        return
+    if tareas[numero - 1]["hecho"]:
+        await interaction.response.send_message(
+            f"Ya estaba completada la tarea #{numero}. 👍", ephemeral=True
+        )
+        return
+    tareas[numero - 1]["hecho"] = True
+    guardar_todos(data)
+    await interaction.response.send_message(
+        f"✅ Tarea #{numero} marcada como hecha: ~~{tareas[numero-1]['texto']}~~", ephemeral=True
+    )
+
+@todo_group.command(name="borrar", description="Eliminar una tarea de tu lista")
+@app_commands.describe(numero="Número de la tarea (de /todo ver)")
+async def todo_borrar(interaction: discord.Interaction, numero: int):
+    data = cargar_todos()
+    uid = str(interaction.user.id)
+    tareas = data.get(uid, [])
+    if numero < 1 or numero > len(tareas):
+        await interaction.response.send_message(
+            f"❌ No existe la tarea #{numero}. Usá `/todo ver` para ver tu lista.", ephemeral=True
+        )
+        return
+    eliminada = tareas.pop(numero - 1)
+    guardar_todos(data)
+    await interaction.response.send_message(
+        f"🗑️ Tarea borrada: {eliminada['texto']}", ephemeral=True
+    )
+
+@todo_group.command(name="limpiar", description="Eliminar todas las tareas ya completadas")
+async def todo_limpiar(interaction: discord.Interaction):
+    data = cargar_todos()
+    uid = str(interaction.user.id)
+    antes = len(data.get(uid, []))
+    data[uid] = [t for t in data.get(uid, []) if not t["hecho"]]
+    guardar_todos(data)
+    eliminadas = antes - len(data[uid])
+    if eliminadas == 0:
+        await interaction.response.send_message(
+            "No había tareas completadas para limpiar.", ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"🧹 Se eliminaron **{eliminadas}** tarea(s) completada(s).", ephemeral=True
+        )
 
 
 # ─── EVENTOS ──────────────────────────────────────────────────────────────────
@@ -654,5 +766,7 @@ async def volumen(interaction: discord.Interaction, nivel: int):
     else:
         await interaction.response.send_message("No hay radio reproduciéndose.", ephemeral=True)
 
+
+bot.tree.add_command(todo_group, guild=discord.Object(id=GUILD_ID))
 
 bot.run(TOKEN)
