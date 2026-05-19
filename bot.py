@@ -18,11 +18,10 @@ TOKEN = os.environ["DISCORD_TOKEN"]
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 GUILD_ID = 1506296906509193256
 
-import imageio_ffmpeg
 import glob
 import ctypes.util
 
-FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+FFMPEG_PATH = "ffmpeg"  # instalado via apt en el Dockerfile
 
 
 def _load_opus():
@@ -141,7 +140,7 @@ async def on_ready():
     ranking_semanal.start()
     notion_watcher.start()
     print("✅ Tareas programadas iniciadas")
-    print(f"🔧 ffmpeg path: {FFMPEG_PATH}")
+    print(f"🔧 ffmpeg: {FFMPEG_PATH} | opus loaded: {discord.opus.is_loaded()}")
     await asyncio.sleep(3)
     guild = bot.get_guild(GUILD_ID)
     if guild and focus_humans(guild):
