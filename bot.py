@@ -28,7 +28,9 @@ FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 def _load_opus():
     if discord.opus.is_loaded():
         return
-    # Intentar nombres estándar
+    import subprocess
+
+    # Intentar nombres estándar (funciona si LD_LIBRARY_PATH está seteado)
     for name in ["opus", "libopus.so.0", "libopus.so"]:
         try:
             discord.opus.load_opus(name)
@@ -36,14 +38,26 @@ def _load_opus():
             return
         except Exception:
             pass
-    # Buscar en el nix store (Railway usa nixpacks)
-    for path in glob.glob("/nix/store/*/lib/libopus.so*"):
-        try:
-            discord.opus.load_opus(path)
-            print(f"✅ Opus cargado desde: {path}")
-            return
-        except Exception:
-            pass
+
+    # Buscar con find en /nix (path real varía por hash del store)
+    try:
+        result = subprocess.run(
+            ["find", "/nix", "-name", "libopus.so*", "-type", "f"],
+            capture_output=True, text=True, timeout=10
+        )
+        for path in result.stdout.strip().splitlines():
+            path = path.strip()
+            if not path:
+                continue
+            try:
+                discord.opus.load_opus(path)
+                print(f"✅ Opus cargado desde nix store: {path}")
+                return
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"⚠️ find falló: {e}")
+
     print("❌ No se pudo cargar libopus — la música no funcionará")
 
 
@@ -206,18 +220,30 @@ async def get_voice(guild: discord.Guild) -> discord.VoiceClient | None:
     if not vc_channel:
         print("❌ Canal Focus no encontrado")
         return None
+
     voice = guild.voice_client
-    if voice and not voice.is_connected():
-        await voice.disconnect(force=True)
-        voice = None
-    if not voice:
+    if voice:
+        if not voice.is_connected():
+            await voice.disconnect(force=True)
+            voice = None
+        else:
+            return voice
+
+    for attempt in range(3):
         try:
-            voice = await vc_channel.connect(timeout=15, reconnect=True)
+            voice = await vc_channel.connect(timeout=20, reconnect=False)
             print(f"✅ Conectado a {vc_channel.name}")
+            return voice
+        except discord.errors.ConnectionClosed as e:
+            # 4006 = sesión vieja todavía activa en Discord — esperar y reintentar
+            print(f"⚠️ ConnectionClosed (intento {attempt+1}): {e} — esperando 3s")
+            await asyncio.sleep(3)
         except Exception as e:
             print(f"❌ Error conectando a voz: {type(e).__name__}: {e}")
             return None
-    return voice
+
+    print("❌ No se pudo conectar a voz después de 3 intentos")
+    return None
 
 
 async def stop_radio(guild: discord.Guild):
