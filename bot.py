@@ -21,10 +21,11 @@ GUILD_ID = 1506296906509193256
 import imageio_ffmpeg
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
+# YouTube 24/7 streams de música chill/jazz/lofi
 RADIO_STATIONS = [
-    "https://ice1.somafm.com/jazzgroove-128-mp3",
-    "https://ice1.somafm.com/groovesalad-128-mp3",
-    "https://ice1.somafm.com/lush-128-mp3",
+    ("🎷 Jazz BGM",      "https://www.youtube.com/watch?v=Dx5qFachd3A"),
+    ("🌿 Lofi Hip Hop",  "https://www.youtube.com/watch?v=jfKfPfyJRdk"),
+    ("🎹 Jazz & Bossa",  "https://www.youtube.com/watch?v=neV3EPgvZ3g"),
 ]
 
 # IDs de canales
@@ -213,13 +214,36 @@ async def start_radio(guild: discord.Guild, station: int = 0):
         voice.stop()
         await asyncio.sleep(0.5)
 
-    url = RADIO_STATIONS[_current_station]
-    print(f"🎵 Iniciando stream: {url}")
+    name, yt_url = RADIO_STATIONS[_current_station]
+    print(f"🎵 Obteniendo stream de YouTube: {name}")
+
+    # Extraer URL de audio con yt-dlp
+    import yt_dlp
+    loop = asyncio.get_event_loop()
+    def get_stream_url():
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "quiet": True,
+            "no_warnings": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(yt_url, download=False)
+            return info["url"]
+
+    try:
+        stream_url = await loop.run_in_executor(None, get_stream_url)
+        print(f"✅ Stream URL obtenida")
+    except Exception as e:
+        print(f"❌ Error obteniendo stream: {e}")
+        # Intentar con la siguiente estación
+        next_s = (station + 1) % len(RADIO_STATIONS)
+        if next_s != station:
+            await start_radio(guild, next_s)
+        return
 
     def after_play(error):
         if error:
             print(f"⚠️ Stream error: {error}")
-        # Solo reconectar si todavía hay gente en el canal
         g = bot.get_guild(GUILD_ID)
         if g and focus_humans(g):
             next_station = (_current_station + 1) % len(RADIO_STATIONS)
@@ -227,15 +251,15 @@ async def start_radio(guild: discord.Guild, station: int = 0):
 
     try:
         source = discord.FFmpegPCMAudio(
-            url,
+            stream_url,
             executable=FFMPEG_PATH,
             before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
             options="-vn"
         )
         voice.play(discord.PCMVolumeTransformer(source, volume=0.5), after=after_play)
-        print(f"✅ Reproduciendo: {url}")
+        print(f"✅ Reproduciendo: {name}")
     except Exception as e:
-        print(f"❌ Error al reproducir: {e}")
+        print(f"❌ Error al reproducir: {type(e).__name__}: {e}")
 
 
 @bot.event
@@ -537,9 +561,9 @@ async def musica(interaction: discord.Interaction):
 
 @bot.tree.command(name="radio", description="Cambiar la estación de radio del Focus Room", guild=discord.Object(id=GUILD_ID))
 @app_commands.choices(estacion=[
-    app_commands.Choice(name="🎷 Jazz Groove", value="0"),
-    app_commands.Choice(name="🌿 Groove Salad (ambient/chill)", value="1"),
-    app_commands.Choice(name="🌸 Lush (chillout)", value="2"),
+    app_commands.Choice(name="🎷 Jazz BGM", value="0"),
+    app_commands.Choice(name="🌿 Lofi Hip Hop", value="1"),
+    app_commands.Choice(name="🎹 Jazz & Bossa Nova", value="2"),
 ])
 async def radio(interaction: discord.Interaction, estacion: app_commands.Choice[str]):
     await start_radio(interaction.guild, int(estacion.value))
