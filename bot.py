@@ -19,7 +19,35 @@ NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 GUILD_ID = 1506296906509193256
 
 import imageio_ffmpeg
+import glob
+import ctypes.util
+
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def _load_opus():
+    if discord.opus.is_loaded():
+        return
+    # Intentar nombres estándar
+    for name in ["opus", "libopus.so.0", "libopus.so"]:
+        try:
+            discord.opus.load_opus(name)
+            print(f"✅ Opus cargado: {name}")
+            return
+        except Exception:
+            pass
+    # Buscar en el nix store (Railway usa nixpacks)
+    for path in glob.glob("/nix/store/*/lib/libopus.so*"):
+        try:
+            discord.opus.load_opus(path)
+            print(f"✅ Opus cargado desde: {path}")
+            return
+        except Exception:
+            pass
+    print("❌ No se pudo cargar libopus — la música no funcionará")
+
+
+_load_opus()
 
 # Direct internet radio streams (no auth, datacenter-friendly)
 RADIO_STATIONS = [
