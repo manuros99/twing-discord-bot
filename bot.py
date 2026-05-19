@@ -21,11 +21,11 @@ GUILD_ID = 1506296906509193256
 import imageio_ffmpeg
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
-# YouTube 24/7 streams de música chill/jazz/lofi
+# Direct internet radio streams (no auth, datacenter-friendly)
 RADIO_STATIONS = [
-    ("🎷 Jazz BGM",      "https://www.youtube.com/watch?v=Dx5qFachd3A"),
-    ("🌿 Lofi Hip Hop",  "https://www.youtube.com/watch?v=jfKfPfyJRdk"),
-    ("🎹 Jazz & Bossa",  "https://www.youtube.com/watch?v=neV3EPgvZ3g"),
+    ("🌿 Groove Salad",    "https://ice6.somafm.com/groovesalad-128-mp3"),
+    ("🎷 Radio Swiss Jazz", "http://stream.srg-ssr.ch/m/rsj/mp3_128"),
+    ("🌙 Radio Paradise",  "https://stream.radioparadise.com/mellow-aac-128"),
 ]
 
 # IDs de canales
@@ -163,11 +163,9 @@ async def on_message(message: discord.Message):
 
 # ─── RADIO ────────────────────────────────────────────────────────────────────
 
-import yt_dlp
-import shutil
-
 _current_station = 0
-YTDLP_PATH = shutil.which("yt-dlp") or "yt-dlp"
+_radio_retries = 0
+MAX_RADIO_RETRIES = len(RADIO_STATIONS)
 
 
 def focus_humans(guild: discord.Guild) -> list:
@@ -195,6 +193,8 @@ async def get_voice(guild: discord.Guild) -> discord.VoiceClient | None:
 
 
 async def stop_radio(guild: discord.Guild):
+    global _radio_retries
+    _radio_retries = 0
     voice = guild.voice_client
     if not voice:
         return
@@ -209,9 +209,15 @@ async def stop_radio(guild: discord.Guild):
 
 
 async def start_radio(guild: discord.Guild, station: int = 0):
-    global _current_station
+    global _current_station, _radio_retries
+
+    if _radio_retries >= MAX_RADIO_RETRIES:
+        print("❌ Todas las estaciones fallaron — cancelando radio")
+        _radio_retries = 0
+        return
+
     _current_station = station % len(RADIO_STATIONS)
-    name, yt_url = RADIO_STATIONS[_current_station]
+    name, stream_url = RADIO_STATIONS[_current_station]
 
     voice = await get_voice(guild)
     if not voice:
@@ -221,43 +227,15 @@ async def start_radio(guild: discord.Guild, station: int = 0):
         voice.stop()
         await asyncio.sleep(0.3)
 
-    print(f"🎵 Extrayendo stream: {name}")
-
-    # Obtener URL de audio fresca via yt-dlp — usar subprocess directo
-    # para minimizar tiempo entre obtención y uso
-    loop = asyncio.get_event_loop()
-
-    def extract():
-        ydl_opts = {
-            "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio",
-            "quiet": True,
-            "no_warnings": True,
-            "nocheckcertificate": True,
-            "source_address": "0.0.0.0",  # forzar IPv4
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            data = ydl.extract_info(yt_url, download=False)
-            formats = data.get("formats", [])
-            # Para streams en vivo, preferir HLS
-            for fmt in formats:
-                if fmt.get("protocol") in ("m3u8", "m3u8_native") and fmt.get("acodec") != "none":
-                    return fmt["url"], fmt.get("ext", "")
-            # Fallback: mejor audio disponible
-            return data["url"], data.get("ext", "")
-
-    try:
-        stream_url, ext = await loop.run_in_executor(None, extract)
-        print(f"✅ URL obtenida (ext={ext})")
-    except Exception as e:
-        print(f"❌ yt-dlp falló: {type(e).__name__}: {e}")
-        # Rotar a siguiente estación
-        await asyncio.sleep(2)
-        await start_radio(guild, (station + 1) % len(RADIO_STATIONS))
-        return
+    print(f"🎵 Conectando a: {name} ({stream_url})")
 
     def after_play(error):
+        global _radio_retries
         if error:
-            print(f"⚠️ Error durante reproducción: {type(error).__name__}: {error}")
+            print(f"⚠️ Stream cortado: {type(error).__name__}: {error}")
+            _radio_retries += 1
+        else:
+            _radio_retries = 0
         g = bot.get_guild(GUILD_ID)
         if g and focus_humans(g):
             next_s = (_current_station + 1) % len(RADIO_STATIONS)
@@ -267,18 +245,19 @@ async def start_radio(guild: discord.Guild, station: int = 0):
         source = discord.FFmpegPCMAudio(
             stream_url,
             executable=FFMPEG_PATH,
-            before_options=(
-                "-reconnect 1 -reconnect_streamed 1 "
-                "-reconnect_delay_max 5 -nostdin"
-            ),
+            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 10 -nostdin",
             options="-vn -ar 48000 -ac 2 -b:a 128k"
         )
         voice.play(discord.PCMVolumeTransformer(source, volume=0.5), after=after_play)
+        _radio_retries = 0
         print(f"✅ Reproduciendo: {name}")
     except Exception as e:
         import traceback
-        print(f"❌ voice.play() falló: {type(e).__name__}: {e}")
+        print(f"❌ Error al reproducir {name}: {type(e).__name__}: {e}")
         traceback.print_exc()
+        _radio_retries += 1
+        await asyncio.sleep(2)
+        await start_radio(guild, (_current_station + 1) % len(RADIO_STATIONS))
 
 
 @bot.event
