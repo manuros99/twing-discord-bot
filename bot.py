@@ -163,7 +163,11 @@ async def on_message(message: discord.Message):
 
 # ─── RADIO ────────────────────────────────────────────────────────────────────
 
+import yt_dlp
+import shutil
+
 _current_station = 0
+YTDLP_PATH = shutil.which("yt-dlp") or "yt-dlp"
 
 
 def focus_humans(guild: discord.Guild) -> list:
@@ -171,95 +175,110 @@ def focus_humans(guild: discord.Guild) -> list:
     return [m for m in vc.members if not m.bot] if vc else []
 
 
+async def get_voice(guild: discord.Guild) -> discord.VoiceClient | None:
+    vc_channel = guild.get_channel(VC_FOCUS)
+    if not vc_channel:
+        print("❌ Canal Focus no encontrado")
+        return None
+    voice = guild.voice_client
+    if voice and not voice.is_connected():
+        await voice.disconnect(force=True)
+        voice = None
+    if not voice:
+        try:
+            voice = await vc_channel.connect(timeout=15, reconnect=True)
+            print(f"✅ Conectado a {vc_channel.name}")
+        except Exception as e:
+            print(f"❌ Error conectando a voz: {type(e).__name__}: {e}")
+            return None
+    return voice
+
+
 async def stop_radio(guild: discord.Guild):
     voice = guild.voice_client
-    if voice:
-        if voice.is_playing():
-            voice.stop()
-        try:
-            await voice.disconnect(force=True)
-        except Exception:
-            pass
+    if not voice:
+        return
+    if voice.is_playing():
+        voice.stop()
+    await asyncio.sleep(0.3)
+    try:
+        await voice.disconnect(force=True)
+    except Exception:
+        pass
     print("🔇 Radio detenida")
 
 
 async def start_radio(guild: discord.Guild, station: int = 0):
     global _current_station
     _current_station = station % len(RADIO_STATIONS)
+    name, yt_url = RADIO_STATIONS[_current_station]
 
-    vc_channel = guild.get_channel(VC_FOCUS)
-    if not vc_channel:
-        print("❌ Canal Focus no encontrado")
+    voice = await get_voice(guild)
+    if not voice:
         return
-
-    # Desconectar si ya hay una instancia colgada
-    voice = guild.voice_client
-    if voice and not voice.is_connected():
-        try:
-            await voice.disconnect(force=True)
-        except Exception:
-            pass
-        voice = None
-
-    # Conectar al canal
-    if not voice or not voice.is_connected():
-        try:
-            voice = await vc_channel.connect(timeout=10, reconnect=True)
-            print(f"✅ Bot conectado a {vc_channel.name}")
-        except Exception as e:
-            print(f"❌ No se pudo conectar al canal de voz: {e}")
-            return
 
     if voice.is_playing():
         voice.stop()
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
 
-    name, yt_url = RADIO_STATIONS[_current_station]
-    print(f"🎵 Obteniendo stream de YouTube: {name}")
+    print(f"🎵 Extrayendo stream: {name}")
 
-    # Extraer URL de audio con yt-dlp
-    import yt_dlp
+    # Obtener URL de audio fresca via yt-dlp — usar subprocess directo
+    # para minimizar tiempo entre obtención y uso
     loop = asyncio.get_event_loop()
-    def get_stream_url():
+
+    def extract():
         ydl_opts = {
-            "format": "bestaudio/best",
+            "format": "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio",
             "quiet": True,
             "no_warnings": True,
+            "nocheckcertificate": True,
+            "source_address": "0.0.0.0",  # forzar IPv4
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(yt_url, download=False)
-            return info["url"]
+            data = ydl.extract_info(yt_url, download=False)
+            formats = data.get("formats", [])
+            # Para streams en vivo, preferir HLS
+            for fmt in formats:
+                if fmt.get("protocol") in ("m3u8", "m3u8_native") and fmt.get("acodec") != "none":
+                    return fmt["url"], fmt.get("ext", "")
+            # Fallback: mejor audio disponible
+            return data["url"], data.get("ext", "")
 
     try:
-        stream_url = await loop.run_in_executor(None, get_stream_url)
-        print(f"✅ Stream URL obtenida")
+        stream_url, ext = await loop.run_in_executor(None, extract)
+        print(f"✅ URL obtenida (ext={ext})")
     except Exception as e:
-        print(f"❌ Error obteniendo stream: {e}")
-        # Intentar con la siguiente estación
-        next_s = (station + 1) % len(RADIO_STATIONS)
-        if next_s != station:
-            await start_radio(guild, next_s)
+        print(f"❌ yt-dlp falló: {type(e).__name__}: {e}")
+        # Rotar a siguiente estación
+        await asyncio.sleep(2)
+        await start_radio(guild, (station + 1) % len(RADIO_STATIONS))
         return
 
     def after_play(error):
         if error:
-            print(f"⚠️ Stream error: {error}")
+            print(f"⚠️ Error durante reproducción: {type(error).__name__}: {error}")
         g = bot.get_guild(GUILD_ID)
         if g and focus_humans(g):
-            next_station = (_current_station + 1) % len(RADIO_STATIONS)
-            asyncio.run_coroutine_threadsafe(start_radio(g, next_station), bot.loop)
+            next_s = (_current_station + 1) % len(RADIO_STATIONS)
+            asyncio.run_coroutine_threadsafe(start_radio(g, next_s), bot.loop)
 
     try:
         source = discord.FFmpegPCMAudio(
             stream_url,
             executable=FFMPEG_PATH,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-            options="-vn"
+            before_options=(
+                "-reconnect 1 -reconnect_streamed 1 "
+                "-reconnect_delay_max 5 -nostdin"
+            ),
+            options="-vn -ar 48000 -ac 2 -b:a 128k"
         )
         voice.play(discord.PCMVolumeTransformer(source, volume=0.5), after=after_play)
         print(f"✅ Reproduciendo: {name}")
     except Exception as e:
-        print(f"❌ Error al reproducir: {type(e).__name__}: {e}")
+        import traceback
+        print(f"❌ voice.play() falló: {type(e).__name__}: {e}")
+        traceback.print_exc()
 
 
 @bot.event
@@ -268,14 +287,12 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         return
     guild = member.guild
 
-    # Alguien entró a Focus
     if after.channel and after.channel.id == VC_FOCUS:
         print(f"👤 {member.display_name} entró a Focus")
         voice = guild.voice_client
         if not voice or not voice.is_playing():
             await start_radio(guild, _current_station)
 
-    # Alguien salió de Focus
     if before.channel and before.channel.id == VC_FOCUS:
         if not focus_humans(guild):
             print("👤 Focus vacío — deteniendo radio")
