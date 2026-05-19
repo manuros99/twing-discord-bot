@@ -301,7 +301,7 @@ async def start_radio(guild: discord.Guild, station: int = 0):
             before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 10 -nostdin",
             options="-vn -ar 48000 -ac 2 -b:a 128k"
         )
-        voice.play(discord.PCMVolumeTransformer(source, volume=0.2), after=after_play)
+        voice.play(discord.PCMVolumeTransformer(source, volume=0.5), after=after_play)
         _radio_retries = 0
         print(f"✅ Reproduciendo: {name}")
     except Exception as e:
