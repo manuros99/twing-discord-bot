@@ -18,7 +18,10 @@ TOKEN = os.environ["DISCORD_TOKEN"]
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 GUILD_ID = 1506296906509193256
 
-FFMPEG_PATH = os.path.join(os.path.dirname(__file__), "ffmpeg")
+import shutil
+# En Railway usa el ffmpeg del sistema (Linux), en Mac usa el binario local
+_local_ffmpeg = os.path.join(os.path.dirname(__file__), "ffmpeg")
+FFMPEG_PATH = _local_ffmpeg if os.path.exists(_local_ffmpeg) and os.access(_local_ffmpeg, os.X_OK) else (shutil.which("ffmpeg") or "ffmpeg")
 
 RADIO_STATIONS = [
     "https://ice1.somafm.com/jazzgroove-128-mp3",
@@ -98,6 +101,7 @@ async def on_ready():
     notion_watcher.start()
     radio_watchdog.start()
     print("✅ Tareas programadas iniciadas")
+    print(f"🔧 ffmpeg path: {FFMPEG_PATH}")
     await asyncio.sleep(3)
     await start_radio()
 
